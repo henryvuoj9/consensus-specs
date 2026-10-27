@@ -1,0 +1,129 @@
+# EIP-8025 -- Fork Choice
+
+*Note*: Tài liệu này đang trong quá trình soạn thảo (work-in-progress), dành cho
+các nhà nghiên cứu và người triển khai (implementer).
+
+## Table of contents
+
+<!-- mdformat-toc start --slug=github --no-anchors --maxlevel=6 --minlevel=2 -->
+
+- [Table of contents](#table-of-contents)
+- [Introduction](#introduction)
+- [Data structures](#data-structures)
+  - [Modified `Store`](#modified-store)
+- [Store initialization](#store-initialization)
+  - [Modified `get_forkchoice_store`](#modified-get_forkchoice_store)
+- [Handlers](#handlers)
+  - [New `on_execution_proof`](#new-on_execution_proof)
+
+<!-- mdformat-toc end -->
+
+## Introduction
+
+Tài liệu này mở rộng `Store` của fork choice để lưu giữ các
+`ExecutionProofEnvelope` đã được verify. Các proof được lưu trữ KHÔNG phải là
+đầu vào của fork choice (không ảnh hưởng đến việc chọn head).
+
+*Note*: Spec này được xây dựng dựa trên [Gloas](../../gloas/fork-choice.md).
+
+## Data structures
+
+### Modified `Store`
+
+```python
+@dataclass
+class Store:
+    time_ms: Uint64
+    genesis_time_ms: Uint64
+    justified_checkpoint: Checkpoint
+    finalized_checkpoint: Checkpoint
+    unrealized_justified_checkpoint: Checkpoint
+    unrealized_finalized_checkpoint: Checkpoint
+    proposer_boost_root: Root
+    equivocating_indices: set[ValidatorIndex]
+    blocks: dict[Root, BeaconBlock]
+    block_states: dict[Root, BeaconState]
+    block_timeliness: dict[Root, list[bool]]
+    checkpoint_states: dict[Checkpoint, BeaconState]
+    latest_messages: dict[ValidatorIndex, LatestMessage]
+    unrealized_justifications: dict[Root, Checkpoint]
+    payloads: dict[Root, ExecutionPayloadEnvelope]
+    payload_timeliness_vote: dict[Root, list[Boolean | None]]
+    payload_data_availability_vote: dict[Root, list[Boolean | None]]
+    # [New in EIP8025]
+    execution_proofs: defaultdict[Root, dict[ProofType, ExecutionProofEnvelope]]
+```
+
+## Store initialization
+
+### Modified `get_forkchoice_store`
+
+```python
+def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -> Store:
+    assert anchor_block.state_root == hash_tree_root(anchor_state)
+    anchor_root = hash_tree_root(anchor_block)
+    anchor_epoch = get_current_epoch(anchor_state)
+    justified_checkpoint = Checkpoint(epoch=anchor_epoch, root=anchor_root)
+    finalized_checkpoint = Checkpoint(epoch=anchor_epoch, root=anchor_root)
+    genesis_time_ms = seconds_to_milliseconds(anchor_state.genesis_time)
+    return Store(
+        time_ms=compute_time_at_slot_ms(genesis_time_ms, anchor_state.slot),
+        genesis_time_ms=genesis_time_ms,
+        justified_checkpoint=justified_checkpoint,
+        finalized_checkpoint=finalized_checkpoint,
+        unrealized_justified_checkpoint=justified_checkpoint,
+        unrealized_finalized_checkpoint=finalized_checkpoint,
+        proposer_boost_root=Root(),
+        equivocating_indices=set(),
+        blocks={anchor_root: anchor_block.copy()},
+        block_states={anchor_root: anchor_state.copy()},
+        block_timeliness={anchor_root: [True, True]},
+        checkpoint_states={justified_checkpoint: anchor_state.copy()},
+        latest_messages={},
+        unrealized_justifications={anchor_root: justified_checkpoint},
+        payloads={},
+        payload_timeliness_vote={anchor_root: [None] * PTC_SIZE},
+        payload_data_availability_vote={anchor_root: [None] * PTC_SIZE},
+        # [New in EIP8025]
+        execution_proofs=defaultdict(dict),
+    )
+```
+
+## Handlers
+
+### New `on_execution_proof`
+
+Handler `on_execution_proof` được gọi khi node nhận được một
+`SignedExecutionProofEnvelope` để xử lý tiếp ở các bước sau (downstream). Handler
+này verify và lưu trữ proof envelope mà không làm thay đổi trọng số fork choice,
+việc chọn head, beacon-chain state, hay trạng thái payload của Gloas.
+
+```python
+def on_execution_proof(
+    store: Store,
+    signed_proof_envelope: SignedExecutionProofEnvelope,
+    proof_engine: ProofEngine,
+) -> None:
+    """
+    Verify and store a received execution proof envelope.
+    """
+    proof_envelope = signed_proof_envelope.message
+    beacon_block_root = proof_envelope.beacon_block_root
+
+    # Beacon block tương ứng phải đã được biết đến và hợp lệ về mặt consensus
+    assert beacon_block_root in store.blocks
+    state = store.block_states.get(beacon_block_root)
+    assert state is not None
+
+    # Execution payload tương ứng phải có sẵn
+    payload_envelope = store.payloads.get(beacon_block_root)
+    assert payload_envelope is not None
+
+    # Chỉ lưu một proof đã verify cho mỗi cặp beacon block và proof type
+    assert proof_envelope.proof_type not in store.execution_proofs.get(beacon_block_root, {})
+
+    process_execution_proof(state, signed_proof_envelope, payload_envelope, proof_engine)
+
+    # Chỉ lưu những proof đã vượt qua bước verify phía sau
+    store.execution_proofs[beacon_block_root][proof_envelope.proof_type] = proof_envelope
+```

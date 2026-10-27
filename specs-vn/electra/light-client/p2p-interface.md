@@ -1,0 +1,107 @@
+# Electra Light Client -- Networking
+
+<!-- mdformat-toc start --slug=github --no-anchors --maxlevel=6 --minlevel=2 -->
+
+- [Networking](#networking)
+  - [The gossip domain: gossipsub](#the-gossip-domain-gossipsub)
+    - [Topics and messages](#topics-and-messages)
+      - [Global topics](#global-topics)
+        - [Modified `light_client_finality_update`](#modified-light_client_finality_update)
+        - [Modified `light_client_optimistic_update`](#modified-light_client_optimistic_update)
+  - [The Req/Resp domain](#the-reqresp-domain)
+    - [Messages](#messages)
+      - [GetLightClientBootstrap](#getlightclientbootstrap)
+      - [LightClientUpdatesByRange](#lightclientupdatesbyrange)
+      - [GetLightClientFinalityUpdate](#getlightclientfinalityupdate)
+      - [GetLightClientOptimisticUpdate](#getlightclientoptimisticupdate)
+
+<!-- mdformat-toc end -->
+
+## Networking
+
+[Deneb light client networking specification](../../deneb/light-client/p2p-interface.md)
+được mở rộng để trao đổi [Electra light client data](./sync-protocol.md).
+
+> 💡 Ghi chú: Các bảng dưới đây cho biết, ứng với mỗi `fork_version` (được suy ra từ fork digest của topic gossip, hoặc từ context bytes trong phản hồi Req/Resp), message/response phải được mã hóa và giải mã theo kiểu SSZ nào. Thay đổi duy nhất ở Electra là bổ sung dòng `ELECTRA_FORK_VERSION` and later, ứng với các kiểu `electra.*` mới (có Merkle branch dài hơn do gindex thay đổi). Các tên message và cơ chế còn lại giữ nguyên như Deneb.
+
+### The gossip domain: gossipsub
+
+#### Topics and messages
+
+##### Global topics
+
+###### Modified `light_client_finality_update`
+
+<!-- eth_consensus_specs: skip -->
+
+| `fork_version`                                         | Message SSZ type                    |
+| ------------------------------------------------------ | ----------------------------------- |
+| `GENESIS_FORK_VERSION`                                 | n/a                                 |
+| `ALTAIR_FORK_VERSION` through `BELLATRIX_FORK_VERSION` | `altair.LightClientFinalityUpdate`  |
+| `CAPELLA_FORK_VERSION`                                 | `capella.LightClientFinalityUpdate` |
+| `DENEB_FORK_VERSION`                                   | `deneb.LightClientFinalityUpdate`   |
+| `ELECTRA_FORK_VERSION` and later                       | `electra.LightClientFinalityUpdate` |
+
+###### Modified `light_client_optimistic_update`
+
+<!-- eth_consensus_specs: skip -->
+
+| `fork_version`                                         | Message SSZ type                      |
+| ------------------------------------------------------ | ------------------------------------- |
+| `GENESIS_FORK_VERSION`                                 | n/a                                   |
+| `ALTAIR_FORK_VERSION` through `BELLATRIX_FORK_VERSION` | `altair.LightClientOptimisticUpdate`  |
+| `CAPELLA_FORK_VERSION`                                 | `capella.LightClientOptimisticUpdate` |
+| `DENEB_FORK_VERSION`                                   | `deneb.LightClientOptimisticUpdate`   |
+| `ELECTRA_FORK_VERSION` and later                       | `electra.LightClientOptimisticUpdate` |
+
+### The Req/Resp domain
+
+#### Messages
+
+##### GetLightClientBootstrap
+
+<!-- eth_consensus_specs: skip -->
+
+| `fork_version`                                         | Response SSZ type              |
+| ------------------------------------------------------ | ------------------------------ |
+| `GENESIS_FORK_VERSION`                                 | n/a                            |
+| `ALTAIR_FORK_VERSION` through `BELLATRIX_FORK_VERSION` | `altair.LightClientBootstrap`  |
+| `CAPELLA_FORK_VERSION`                                 | `capella.LightClientBootstrap` |
+| `DENEB_FORK_VERSION`                                   | `deneb.LightClientBootstrap`   |
+| `ELECTRA_FORK_VERSION` and later                       | `electra.LightClientBootstrap` |
+
+##### LightClientUpdatesByRange
+
+<!-- eth_consensus_specs: skip -->
+
+| `fork_version`                                         | Response chunk SSZ type     |
+| ------------------------------------------------------ | --------------------------- |
+| `GENESIS_FORK_VERSION`                                 | n/a                         |
+| `ALTAIR_FORK_VERSION` through `BELLATRIX_FORK_VERSION` | `altair.LightClientUpdate`  |
+| `CAPELLA_FORK_VERSION`                                 | `capella.LightClientUpdate` |
+| `DENEB_FORK_VERSION`                                   | `deneb.LightClientUpdate`   |
+| `ELECTRA_FORK_VERSION` and later                       | `electra.LightClientUpdate` |
+
+##### GetLightClientFinalityUpdate
+
+<!-- eth_consensus_specs: skip -->
+
+| `fork_version`                                         | Response SSZ type                   |
+| ------------------------------------------------------ | ----------------------------------- |
+| `GENESIS_FORK_VERSION`                                 | n/a                                 |
+| `ALTAIR_FORK_VERSION` through `BELLATRIX_FORK_VERSION` | `altair.LightClientFinalityUpdate`  |
+| `CAPELLA_FORK_VERSION`                                 | `capella.LightClientFinalityUpdate` |
+| `DENEB_FORK_VERSION`                                   | `deneb.LightClientFinalityUpdate`   |
+| `ELECTRA_FORK_VERSION` and later                       | `electra.LightClientFinalityUpdate` |
+
+##### GetLightClientOptimisticUpdate
+
+<!-- eth_consensus_specs: skip -->
+
+| `fork_version`                                         | Response SSZ type                     |
+| ------------------------------------------------------ | ------------------------------------- |
+| `GENESIS_FORK_VERSION`                                 | n/a                                   |
+| `ALTAIR_FORK_VERSION` through `BELLATRIX_FORK_VERSION` | `altair.LightClientOptimisticUpdate`  |
+| `CAPELLA_FORK_VERSION`                                 | `capella.LightClientOptimisticUpdate` |
+| `DENEB_FORK_VERSION`                                   | `deneb.LightClientOptimisticUpdate`   |
+| `ELECTRA_FORK_VERSION` and later                       | `electra.LightClientOptimisticUpdate` |

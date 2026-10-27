@@ -1,0 +1,418 @@
+# Heze -- The Beacon Chain
+
+*Lưu ý*: Tài liệu này vẫn đang trong quá trình hoàn thiện, dành cho các nhà nghiên cứu và người triển khai client.
+
+<!-- mdformat-toc start --slug=github --no-anchors --maxlevel=6 --minlevel=2 -->
+
+- [Introduction](#introduction)
+- [Types](#types)
+  - [New `InclusionListBits`](#new-inclusionlistbits)
+  - [New `InclusionListCommittee`](#new-inclusionlistcommittee)
+- [Constants](#constants)
+  - [Domains](#domains)
+- [Presets](#presets)
+  - [Inclusion list committee](#inclusion-list-committee)
+- [Containers](#containers)
+  - [New containers](#new-containers)
+    - [`InclusionList`](#inclusionlist)
+    - [`SignedInclusionList`](#signedinclusionlist)
+  - [Modified containers](#modified-containers)
+    - [`ExecutionPayloadBid`](#executionpayloadbid)
+    - [`SignedExecutionPayloadBid`](#signedexecutionpayloadbid)
+    - [`BeaconBlockBody`](#beaconblockbody)
+    - [`BeaconState`](#beaconstate)
+- [Helpers](#helpers)
+  - [Predicates](#predicates)
+    - [New `is_valid_inclusion_list_signature`](#new-is_valid_inclusion_list_signature)
+  - [Beacon state accessors](#beacon-state-accessors)
+    - [New `get_inclusion_list_committee`](#new-get_inclusion_list_committee)
+- [Beacon chain state transition function](#beacon-chain-state-transition-function)
+  - [Epoch processing](#epoch-processing)
+    - [Modified `apply_pending_deposit`](#modified-apply_pending_deposit)
+    - [Modified `process_epoch`](#modified-process_epoch)
+  - [Block processing](#block-processing)
+    - [Modified `process_block`](#modified-process_block)
+    - [Operations](#operations)
+      - [Modified `process_operations`](#modified-process_operations)
+
+<!-- mdformat-toc end -->
+
+## Introduction
+
+Heze là một bản nâng cấp tầng đồng thuận (consensus layer) bao gồm nhiều tính
+năng, trong đó có:
+
+- [EIP-7805](https://github.com/ethereum/EIPs/blob/9a345f96c2295a678b0ce33e94d41276ddb3fdef/EIPS/eip-7805.md):
+  Inclusion List được thực thi bởi fork choice (FOCIL — Fork-choice enforced
+  Inclusion Lists)
+- [EIP-8015](https://github.com/ethereum/EIPs/blob/0ebff04bf89b696d51ebf2ff9d029940ef3ed693/EIPS/eip-8015.md):
+  Loại bỏ các trường `deposit` và `eth1data`
+- [EIP-8365](https://github.com/ethereum/EIPs/blob/718595d75a86eafcf6f005c2b79e23ef941381e5/EIPS/eip-8365.md):
+  Không cho phép tạo validator mới có tiền tố `0x00`
+
+*Lưu ý*: Các EIP này vẫn đang ở dạng bản nháp (draft) và có thể thay đổi hoặc bị
+loại bỏ. Mỗi liên kết ở trên trỏ tới đúng phiên bản mà spec này nhắm tới, phiên
+bản đó có thể khác với phiên bản mới nhất được công bố của các EIP.
+
+> 💡 Ghi chú: Inclusion list (danh sách giao dịch bắt buộc đưa vào block) cho
+> phép một nhóm validator (inclusion list committee) chỉ định các giao dịch mà
+> block kế tiếp phải chứa. Fork choice sẽ "trừng phạt" các block bỏ qua những
+> giao dịch này, nhờ đó tăng khả năng chống kiểm duyệt (censorship resistance).
+
+## Types
+
+### New `InclusionListBits`
+
+```python
+class InclusionListBits(BitVector):
+    """
+    A bitfield over the inclusion list committee, one bit per member in
+    committee order.
+    """
+
+    LENGTH = INCLUSION_LIST_COMMITTEE_SIZE
+```
+
+Một bitfield trải trên inclusion list committee: mỗi thành viên ứng với một bit,
+theo đúng thứ tự trong committee.
+
+### New `InclusionListCommittee`
+
+```python
+class InclusionListCommittee(Vector[ValidatorIndex]):
+    """
+    The inclusion list committee of a slot.
+    """
+
+    LENGTH = INCLUSION_LIST_COMMITTEE_SIZE
+```
+
+Inclusion list committee của một slot.
+
+## Constants
+
+### Domains
+
+| Name                              | Value                      |
+| --------------------------------- | -------------------------- |
+| `DOMAIN_INCLUSION_LIST_COMMITTEE` | `DomainType("0x10000000")` |
+
+## Presets
+
+### Inclusion list committee
+
+| Name                            | Value                 |
+| ------------------------------- | --------------------- |
+| `INCLUSION_LIST_COMMITTEE_SIZE` | `Uint64(2**4)` (= 16) |
+
+## Containers
+
+### New containers
+
+#### `InclusionList`
+
+```python
+class InclusionList(Container):
+    slot: Slot
+    validator_index: ValidatorIndex
+    dependent_root: Root
+    transactions: Transactions
+```
+
+#### `SignedInclusionList`
+
+```python
+class SignedInclusionList(Container):
+    message: InclusionList
+    signature: BLSSignature
+```
+
+### Modified containers
+
+#### `ExecutionPayloadBid`
+
+```python
+class ExecutionPayloadBid(ProgressiveContainer):
+    ACTIVE_FIELDS = active_fields(width=13)
+
+    parent_block_hash: Hash32
+    parent_block_root: Root
+    block_hash: Hash32
+    prev_randao: Bytes32
+    fee_recipient: ExecutionAddress
+    gas_limit: Uint64
+    builder_index: BuilderIndex
+    slot: Slot
+    value: Gwei
+    execution_payment: Gwei
+    blob_kzg_commitments: BlobKZGCommitments
+    execution_requests_root: Root
+    # [New in Heze:EIP7805]
+    inclusion_list_bits: InclusionListBits
+```
+
+> 💡 Ghi chú: Trường mới `inclusion_list_bits` cho biết những inclusion list
+> nào (theo vị trí thành viên trong committee) mà builder đã cam kết tuân thủ khi
+> xây dựng execution payload.
+
+#### `SignedExecutionPayloadBid`
+
+```python
+class SignedExecutionPayloadBid(Container):
+    # [Modified in Heze:EIP7805]
+    message: ExecutionPayloadBid
+    signature: BLSSignature
+```
+
+#### `BeaconBlockBody`
+
+```python
+class BeaconBlockBody(ProgressiveContainer):
+    ACTIVE_FIELDS = active_fields(width=13, gaps=(1, 6))
+
+    randao_reveal: BLSSignature
+    # [Modified in Heze:EIP8015]
+    # Đã loại bỏ `eth1_data`
+    graffiti: Bytes32
+    proposer_slashings: ProposerSlashings
+    attester_slashings: AttesterSlashings
+    attestations: Attestations
+    # [Modified in Heze:EIP8015]
+    # Đã loại bỏ `deposits`
+    voluntary_exits: VoluntaryExits
+    sync_aggregate: SyncAggregate
+    bls_to_execution_changes: BLSToExecutionChanges
+    # [Modified in Heze:EIP7805]
+    signed_execution_payload_bid: SignedExecutionPayloadBid
+    payload_attestations: PayloadAttestations
+    parent_execution_requests: ExecutionRequests
+```
+
+> 💡 Ghi chú: Vì dùng `ProgressiveContainer`, các trường bị loại bỏ được đánh
+> dấu là "khoảng trống" (`gaps=(1, 6)`) thay vì xoá hẳn, nhờ đó vị trí (index)
+> Merkle của các trường còn lại không thay đổi.
+
+#### `BeaconState`
+
+```python
+class BeaconState(ProgressiveContainer):
+    ACTIVE_FIELDS = active_fields(width=46, gaps=(8, 9, 10, 28))
+
+    genesis_time: Uint64
+    genesis_validators_root: Root
+    slot: Slot
+    fork: Fork
+    latest_block_header: BeaconBlockHeader
+    block_roots: BlockRoots
+    state_roots: StateRoots
+    historical_roots: HistoricalRoots
+    # [Modified in Heze:EIP8015]
+    # Đã loại bỏ `eth1_data`
+    # [Modified in Heze:EIP8015]
+    # Đã loại bỏ `eth1_data_votes`
+    # [Modified in Heze:EIP8015]
+    # Đã loại bỏ `eth1_deposit_index`
+    validators: Validators
+    balances: Balances
+    randao_mixes: RandaoMixes
+    slashings: Slashings
+    previous_epoch_participation: EpochParticipation
+    current_epoch_participation: EpochParticipation
+    justification_bits: JustificationBits
+    previous_justified_checkpoint: Checkpoint
+    current_justified_checkpoint: Checkpoint
+    finalized_checkpoint: Checkpoint
+    inactivity_scores: InactivityScores
+    current_sync_committee: SyncCommittee
+    next_sync_committee: SyncCommittee
+    latest_block_hash: Hash32
+    next_withdrawal_index: WithdrawalIndex
+    next_withdrawal_validator_index: ValidatorIndex
+    historical_summaries: HistoricalSummaries
+    # [Modified in Heze:EIP8015]
+    # Đã loại bỏ `deposit_requests_start_index`
+    deposit_balance_to_consume: Gwei
+    exit_balance_to_consume: Gwei
+    earliest_exit_epoch: Epoch
+    consolidation_balance_to_consume: Gwei
+    earliest_consolidation_epoch: Epoch
+    pending_deposits: PendingDeposits
+    pending_partial_withdrawals: PendingPartialWithdrawals
+    pending_consolidations: PendingConsolidations
+    proposer_lookahead: ProposerLookahead
+    builders: Builders
+    next_withdrawal_builder_index: BuilderIndex
+    execution_payload_availability: ExecutionPayloadAvailability
+    builder_pending_payments: BuilderPendingPayments
+    builder_pending_withdrawals: BuilderPendingWithdrawals
+    # [Modified in Heze:EIP7805]
+    latest_execution_payload_bid: ExecutionPayloadBid
+    payload_expected_withdrawals: Withdrawals
+    ptc_window: PayloadTimelinessCommitteeWindow
+```
+
+## Helpers
+
+### Predicates
+
+#### New `is_valid_inclusion_list_signature`
+
+```python
+def is_valid_inclusion_list_signature(
+    state: BeaconState, signed_inclusion_list: SignedInclusionList
+) -> bool:
+    """
+    Check if ``signed_inclusion_list`` has a valid signature.
+    """
+    message = signed_inclusion_list.message
+    index = message.validator_index
+    pubkey = state.validators[index].pubkey
+    domain = compute_domain(
+        DOMAIN_INCLUSION_LIST_COMMITTEE,
+        compute_fork_version(compute_epoch_at_slot(message.slot)),
+        state.genesis_validators_root,
+    )
+    signing_root = compute_signing_root(message, domain)
+    return bls.Verify(pubkey, signing_root, signed_inclusion_list.signature)
+```
+
+Hàm kiểm tra xem `signed_inclusion_list` có signature hợp lệ hay không. Domain
+được tính từ fork version tại epoch chứa `message.slot`, nên signature vẫn được
+kiểm tra đúng ngay cả khi state hiện tại thuộc một fork khác.
+
+### Beacon state accessors
+
+#### New `get_inclusion_list_committee`
+
+```python
+def get_inclusion_list_committee(state: BeaconState, slot: Slot) -> InclusionListCommittee:
+    """
+    Get the inclusion list committee for the given ``slot``.
+    """
+    epoch = compute_epoch_at_slot(slot)
+    indices: list[ValidatorIndex] = []
+    # Nối tất cả các committee của slot này lại theo thứ tự
+    committees_per_slot = get_committee_count_per_slot(state, epoch)
+    for i in range(committees_per_slot):
+        committee = get_beacon_committee(state, slot, CommitteeIndex(i))
+        indices.extend(committee)
+    return InclusionListCommittee(
+        data=[indices[index % len(indices)] for index in range(INCLUSION_LIST_COMMITTEE_SIZE)]
+    )
+```
+
+Trả về inclusion list committee cho `slot` đã cho.
+
+> 💡 Ghi chú: Hàm nối tất cả beacon committee của slot thành một danh sách, rồi
+> lấy `INCLUSION_LIST_COMMITTEE_SIZE` phần tử đầu tiên. Nếu danh sách ngắn hơn
+> kích thước committee, chỉ số sẽ quay vòng (`index % len(indices)`), nên một
+> validator có thể xuất hiện nhiều lần.
+
+## Beacon chain state transition function
+
+### Epoch processing
+
+#### Modified `apply_pending_deposit`
+
+*Lưu ý*: Các deposit mà nếu áp dụng sẽ tạo ra validator mới có withdrawal
+credentials kiểu BLS (tiền tố `0x00`) sẽ bị bỏ qua và KHÔNG được hoàn tiền, kể cả
+các deposit đã được gửi trước Heze. Các deposit nạp thêm (top-up) cho validator
+đã tồn tại thì không bị ảnh hưởng.
+
+```python
+def apply_pending_deposit(state: BeaconState, deposit: PendingDeposit) -> None:
+    """
+    Applies ``deposit`` to the ``state`` without creating validators with BLS withdrawal credentials.
+    """
+    validator_pubkeys = [validator.pubkey for validator in state.validators]
+    if deposit.pubkey not in validator_pubkeys:
+        # [New in Heze:EIP8365]
+        # Không tạo validator có BLS withdrawal credentials
+        if deposit.withdrawal_credentials[:1] == BLS_WITHDRAWAL_PREFIX:
+            return
+        # Xác minh signature của deposit (proof of possession), vốn không được deposit contract kiểm tra
+        if is_valid_deposit_signature(
+            deposit.pubkey, deposit.withdrawal_credentials, deposit.amount, deposit.signature
+        ):
+            add_validator_to_registry(
+                state, deposit.pubkey, deposit.withdrawal_credentials, deposit.amount
+            )
+    else:
+        validator_index = ValidatorIndex(validator_pubkeys.index(deposit.pubkey))
+        increase_balance(state, validator_index, deposit.amount)
+```
+
+#### Modified `process_epoch`
+
+*Lưu ý*: `process_epoch` bỏ lời gọi tới `process_eth1_data_reset`.
+
+```python
+def process_epoch(state: BeaconState) -> None:
+    process_justification_and_finalization(state)
+    process_inactivity_updates(state)
+    process_rewards_and_penalties(state)
+    process_registry_updates(state)
+    process_slashings(state)
+    # [Modified in Heze:EIP8015]
+    # Đã loại bỏ `process_eth1_data_reset`
+    process_pending_deposits(state)
+    process_pending_consolidations(state)
+    process_builder_pending_payments(state)
+    process_effective_balance_updates(state)
+    process_slashings_reset(state)
+    process_randao_mixes_reset(state)
+    process_historical_summaries_update(state)
+    process_participation_flag_updates(state)
+    process_sync_committee_updates(state)
+    process_proposer_lookahead(state)
+    process_ptc_window(state)
+```
+
+### Block processing
+
+#### Modified `process_block`
+
+*Lưu ý*: `process_block` bỏ lời gọi tới `process_eth1_data`.
+
+```python
+def process_block(state: BeaconState, block: BeaconBlock) -> None:
+    parent_slot = state.latest_block_header.slot
+
+    process_parent_execution_payload(state, block)
+    process_block_header(state, block)
+    process_withdrawals(state)
+    process_execution_payload_bid(state, block.body.signed_execution_payload_bid)
+    process_randao(state, block.body)
+    # [Modified in Heze:EIP8015]
+    # Đã loại bỏ `process_eth1_data`
+    process_operations(state, block.body, parent_slot)
+    process_sync_aggregate(state, block.body.sync_aggregate)
+```
+
+#### Operations
+
+##### Modified `process_operations`
+
+*Lưu ý*: `process_operations` bỏ bước kiểm tra rằng `body.deposits` phải rỗng
+(vì trường `deposits` đã bị loại khỏi `BeaconBlockBody`).
+
+```python
+def process_operations(state: BeaconState, body: BeaconBlockBody, parent_slot: Slot) -> None:
+    def for_ops(operations: Sequence[Any], fn: Callable[..., None], *args: Any) -> None:
+        for operation in operations:
+            fn(state, operation, *args)
+
+    assert len(body.proposer_slashings) <= MAX_PROPOSER_SLASHINGS
+    assert len(body.attester_slashings) <= MAX_ATTESTER_SLASHINGS_ELECTRA
+    assert len(body.attestations) <= MAX_ATTESTATIONS_ELECTRA
+    assert len(body.voluntary_exits) <= MAX_VOLUNTARY_EXITS
+    assert len(body.bls_to_execution_changes) <= MAX_BLS_TO_EXECUTION_CHANGES
+    assert len(body.payload_attestations) <= MAX_PAYLOAD_ATTESTATIONS
+
+    for_ops(body.proposer_slashings, process_proposer_slashing)
+    for_ops(body.attester_slashings, process_attester_slashing)
+    for_ops(body.attestations, process_attestation, parent_slot)
+    for_ops(body.voluntary_exits, process_voluntary_exit)
+    for_ops(body.bls_to_execution_changes, process_bls_to_execution_change)
+    for_ops(body.payload_attestations, process_payload_attestation)
+```
